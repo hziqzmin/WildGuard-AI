@@ -4,7 +4,7 @@
 
 ---
 
-Model Download:  
+## 📥 Model Download:  
 This app requires the quantized MediaPipe task bundle to run locally:
 
 * **Model:** [AfiOne/gemma3-1b-it-int4.task](https://huggingface.co/AfiOne/gemma3-1b-it-int4.task)
