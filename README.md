@@ -1,4 +1,4 @@
-## WildGuard AI
+# WildGuard AI
 
 **WildGuard AI** is an experimental Android application that runs lightweight Large Language Models (LLMs) locally on-device using MediaPipe and Jetpack Compose.
 
