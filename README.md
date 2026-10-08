@@ -28,7 +28,7 @@ This app requires the quantized MediaPipe task bundle to run locally:
    ```text
    app/src/main/assets/gemma3-1b-it-int4.task
    
-3. Run the app.
+3. Run the app.  
 
 ## Disclaimer:  
 This project was built primarily through trial and error as an exploration of edge-device AI. Output quality, generation latency, and resource usage will vary significantly across hardware configurations.  
