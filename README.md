@@ -30,7 +30,7 @@ This app requires the quantized MediaPipe task bundle to run locally:
    
 3. Run the app.
 
-Disclaimer:
+## Disclaimer:  
 This project was built primarily through trial and error as an exploration of edge-device AI. Output quality, generation latency, and resource usage will vary significantly across hardware configurations.  
 
 There are still a lot to improve in terms of the quality of the text output. I plan to use a better on-device AI model while not consuming a lot of the device battery consumption. The mobile app UI/UX also need to be improved a lot since the current version is only using the default Jetpack Compose template.
