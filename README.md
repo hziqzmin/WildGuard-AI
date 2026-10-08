@@ -1,6 +1,6 @@
 ## WildGuard AI
 
-AfiOne/gemma3-1b-it-int4.task download link:
+AfiOne/gemma3-1b-it-int4.task download link:  
 <https://huggingface.co/AfiOne/gemma3-1b-it-int4.task>
 
 How to use:
