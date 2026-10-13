@@ -2,53 +2,59 @@ package io.github.hziqzmin.wildguardai.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// --- YOUR 4 CORE COLORS ---
-val DarkGreen = Color(0xFF2D3A3A)     // For Text and UI elements
-val Cream = Color(0xFFF5F5F0)            // For Backgrounds
-val White = Color(0xFFFFFFFF)
-val Black = Color(0xFF000000)
-val AccentTurquoise = Color(0xFF26A69A)  // Your selected teal accent
+// --- WILDGUARD AI v2 FIGMA PALETTE (5 CORE SECTIONS) ---
+val DarkSlateGreen = Color(0xFF2D3A3A) // Section 1: Top bar, Input card, Center Nav button, Splash
+val WarmCream = Color(0xFFF5F0E0)      // Section 2: Secondary background, warm surfaces
+val OffWhite = Color(0xFFFAFAFA)       // Section 3: Main background, elevated cards/avatars
+val NearBlack = Color(0xFF0F0F0F)      // Section 4: Primary text and high-contrast icons
+val AccentTeal = Color(0xFF26A69A)     // Section 5: Interactive accents, highlights, active states
+
+// Semantic & Alert Colors for Survival Context
+val CautionAmber = Color(0xFFD97706)
+val CautionBg = Color(0xFFFEF3C7)
+val SosCrimson = Color(0xFFDC2626)
+val MutedText = Color(0xFF9CA3AF)
+
+// Backwards-compatible aliases used across existing screens
+val DarkGreen = DarkSlateGreen
+val Cream = WarmCream
+val White = OffWhite
+val Black = NearBlack
+val AccentTurquoise = AccentTeal
 
 // --- MATERIAL 3 LIGHT THEME MAPPING ---
-// We map your colors to the required Material 3 roles for a light theme.
+val md_theme_light_primary = DarkSlateGreen
+val md_theme_light_onPrimary = OffWhite
+val md_theme_light_primaryContainer = DarkSlateGreen
+val md_theme_light_onPrimaryContainer = OffWhite
 
-// Primary = Main interactive color (buttons, selected tabs)
-val md_theme_light_primary = AccentTurquoise // <-- NOW USES YOUR NEW ACCENT
-// OnPrimary = Text/icons on top of the primary color
-val md_theme_light_onPrimary = White // <-- Text on buttons should be White for contrast
+val md_theme_light_secondary = AccentTeal
+val md_theme_light_onSecondary = OffWhite
+val md_theme_light_secondaryContainer = WarmCream
+val md_theme_light_onSecondaryContainer = DarkSlateGreen
 
-// Background = The main screen background color
-val md_theme_light_background = Cream
-// OnBackground = The main text color on the background
-val md_theme_light_onBackground = DarkGreen
+val md_theme_light_tertiary = AccentTeal
+val md_theme_light_onTertiary = OffWhite
+val md_theme_light_tertiaryContainer = WarmCream
+val md_theme_light_onTertiaryContainer = NearBlack
 
-// Surface = Color of components like Cards, TextFields, TopAppBar
-val md_theme_light_surface = Cream
-// OnSurface = Text/icons on top of surface components
-val md_theme_light_onSurface = DarkGreen
+val md_theme_light_background = OffWhite
+val md_theme_light_onBackground = NearBlack
 
-// --- We fill the rest with your colors to ensure a complete, minimal theme ---
+val md_theme_light_surface = OffWhite
+val md_theme_light_onSurface = NearBlack
+val md_theme_light_surfaceVariant = WarmCream
+val md_theme_light_onSurfaceVariant = DarkSlateGreen
 
-val md_theme_light_primaryContainer = AccentTurquoise
-val md_theme_light_onPrimaryContainer = White
-val md_theme_light_secondary = DarkGreen
-val md_theme_light_onSecondary = Cream
-val md_theme_light_secondaryContainer = Cream
-val md_theme_light_onSecondaryContainer = DarkGreen
-val md_theme_light_tertiary = DarkGreen
-val md_theme_light_onTertiary = Cream
-val md_theme_light_tertiaryContainer = Cream
-val md_theme_light_onTertiaryContainer = DarkGreen
-val md_theme_light_error = Color(0xFFB00020) // It's good to keep a standard red for errors
-val md_theme_light_onError = White
-val md_theme_light_errorContainer = Color(0xFFFCD8DF)
-val md_theme_light_onErrorContainer = Black
-val md_theme_light_surfaceVariant = Cream
-val md_theme_light_onSurfaceVariant = DarkGreen
-val md_theme_light_outline = DarkGreen
-val md_theme_light_inverseOnSurface = Cream
-val md_theme_light_inverseSurface = DarkGreen
-val md_theme_light_inversePrimary = Cream
-val md_theme_light_surfaceTint = DarkGreen
-val md_theme_light_outlineVariant = Cream
-val md_theme_light_scrim = Black
+val md_theme_light_error = SosCrimson
+val md_theme_light_onError = OffWhite
+val md_theme_light_errorContainer = Color(0xFFFEE2E2)
+val md_theme_light_onErrorContainer = NearBlack
+
+val md_theme_light_outline = Color(0xFFD1D5DB)
+val md_theme_light_outlineVariant = Color(0xFFE5E7EB)
+val md_theme_light_inverseOnSurface = OffWhite
+val md_theme_light_inverseSurface = DarkSlateGreen
+val md_theme_light_inversePrimary = AccentTeal
+val md_theme_light_surfaceTint = DarkSlateGreen
+val md_theme_light_scrim = NearBlack

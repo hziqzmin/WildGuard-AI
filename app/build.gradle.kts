@@ -2,6 +2,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.google.services)
 }
 
 android {
@@ -12,8 +13,8 @@ android {
         applicationId = "io.github.hziqzmin.wildguardai"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -42,7 +43,6 @@ android {
         noCompress += listOf("tflite", "bin", "json", "onnx")
     }
 
-    // TensorFlow Lite (TFLite) and ONNX Runtime (ORT).
     packaging {
         jniLibs {
             pickFirsts.add("lib/arm64-v8a/libc++_shared.so")
@@ -65,7 +65,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(platform(libs.androidx.compose.bom))
-    implementation(libs.androidx.lifecycle.viewmodel.ktx) // Add this line for ViewModel
+    implementation(libs.androidx.lifecycle.viewmodel.ktx)
     implementation(libs.androidx.ui)
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
@@ -79,6 +79,11 @@ dependencies {
     implementation(libs.onnxruntime.android)
     implementation(libs.gson)
     implementation(libs.kotlinx.coroutines.android)
+
+    // Firebase Authentication & Offline DataStore
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.auth)
+    implementation(libs.androidx.datastore.preferences)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

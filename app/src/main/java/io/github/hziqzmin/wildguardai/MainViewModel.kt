@@ -6,23 +6,29 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import com.google.mediapipe.tasks.core.BaseOptions
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import com.google.mediapipe.tasks.genai.llminference.LlmInferenceSession
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
-import com.google.mediapipe.tasks.core.BaseOptions
 import com.google.mediapipe.tasks.text.textembedder.TextEmbedder
 import com.google.mediapipe.tasks.text.textembedder.TextEmbedder.TextEmbedderOptions
-import kotlin.math.sqrt
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileOutputStream
+import kotlin.math.sqrt
+import kotlin.time.Duration.Companion.milliseconds
 
 data class ChatMessage(
     val id: Int,
     val text: String,
-    val author: Author
+    val author: Author,
+    val isStreaming: Boolean = false,
+    val sources: List<String> = emptyList()
 )
 
 enum class Author { USER, AI }
@@ -35,7 +41,7 @@ data class KnowledgeChunk(
     val use_cases: List<String>? = null,
     val instructions: String? = null,
     val text: String? = null,
-    val embedding: List<Double>
+    val embedding: List<Double>? = null
 )
 
 class MainViewModel(private val app: Application) : AndroidViewModel(app) {
@@ -43,39 +49,27 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     companion object {
         private const val TAG = "WildGuardAI"
 
-        // Name of the Gemma task file INSIDE assets/
-        private const val GEMMA_ASSET_NAME = "gemma3-1B-it-int4.task"
+        // Support both lowercase and uppercase asset filenames
+        private val GEMMA_ASSET_CANDIDATES = listOf(
+            "gemma3-1b-it-int4.task",
+            "gemma3-1B-it-int4.task"
+        )
 
-        // or 600–800, but keep it modest
-        private const val EMBED_TEXT_MAX_CHARS = 600
-
-        // ~100–150 tokens
-        private const val CONTEXT_CHARS_PER_CHUNK = 400
-
-        // How many passages to retrieve for context
-        private const val TOP_K = 1
-
-        // Safety cap for prompt length to avoid maxTokens crash
+        private const val CONTEXT_CHARS_PER_CHUNK = 500
+        private const val TOP_K = 2
         private const val MAX_PROMPT_CHARS = 7000
+
+        // Auto-unload LLM from RAM after 5 minutes of inactivity to save battery
+        private const val IDLE_UNLOAD_MS = 5 * 60 * 1000L
     }
 
-    // MediaPipe TextEmbedder for embeddings
     private var textEmbedder: TextEmbedder? = null
-
-    // Embeddings for each KB item, same index as `library`
     private var kbEmbeddings: List<FloatArray> = emptyList()
-
-    // Embedding model (TFLite) for similarity search
-    //private var finder: Interpreter? = null
-
-    // LLM for generation (Gemma via MediaPipe)
-    private var brain: LlmInference? = null
-
-    // Per-session sampling controls (temperature, top-k, etc.)
-    private var brainSession: LlmInferenceSession? = null
-
-    // Knowledge base with pre-computed embeddings
     private var library: List<KnowledgeChunk> = emptyList()
+
+    private var brain: LlmInference? = null
+    private var brainSession: LlmInferenceSession? = null
+    private var idleUnloadJob: Job? = null
 
     private val _isLoading = MutableStateFlow(true)
     val isLoading = _isLoading.asStateFlow()
@@ -88,306 +82,348 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     init {
         viewModelScope.launch(Dispatchers.IO) {
-            initializeAI()
-
-            val initialText = buildString {
-                if (brain != null) {
-                    append("Hi! I'm WildGuard AI (Gemma on-device). How can I help you?\n")
-                } else {
-                    append("AI model is not loaded or failed to respond.\n")
-                    append("\nExpected .task file in assets: $GEMMA_ASSET_NAME")
-                }
-
-                if (textEmbedder == null || kbEmbeddings.isEmpty()) {
-                    append("\n⚠️ Embedding model not loaded, using keyword-only retrieval.")
-                }
-
-                /*if (finder == null) {
-                    append("\n⚠️ Embedding model not loaded, using keyword-only retrieval.")
-                }*/
-
-                if (library.isEmpty()) {
-                    append("\n⚠️ Knowledge base is empty or failed to load.")
-                }
-            }.trim()
-
-            _messages.value = listOf(
-                ChatMessage(
-                    id = 0,
-                    text = initialText,
-                    author = Author.AI
-                )
-            )
-
+            initializeRagEngine()
+            // Brief splash transition so the Figma Loading Screen is visible cleanly
+            delay(600)
             _isLoading.value = false
         }
     }
 
-    // ----------------- INIT -----------------
+    /**
+     * Fast, zero-battery-drain startup:
+     * 1. Loads knowledge_base.json and uses its pre-computed embeddings directly (0ms).
+     * 2. Initializes lightweight TextEmbedder for user queries (~5MB).
+     * 3. Defers heavy 600MB Gemma LLM loading until the user actually sends a message (Lazy Loading).
+     */
+    private fun initializeRagEngine() {
+        Log.d(TAG, "Initializing RAG Engine...")
 
-    private fun initializeAI() {
-        Log.d(TAG, "Initializing AI...")
-
-        // 1) Load knowledge base
+        // 1) Load knowledge base + pre-computed embeddings
         try {
             val gson = Gson()
             val jsonStream = app.assets.open("knowledge_base.json").bufferedReader()
             val type = object : TypeToken<List<KnowledgeChunk>>() {}.type
-            library = gson.fromJson(jsonStream, type)
-            Log.d(TAG, "Knowledge base loaded with ${library.size} chunks")
+            library = gson.fromJson(jsonStream, type) ?: emptyList()
+
+            // Use pre-computed embeddings from JSON to avoid 45 TFLite passes on startup
+            kbEmbeddings = library.map { chunk ->
+                val precomputed = chunk.embedding
+                if (!precomputed.isNullOrEmpty()) {
+                    FloatArray(precomputed.size) { i -> precomputed[i].toFloat() }
+                } else {
+                    FloatArray(0)
+                }
+            }
+            Log.d(TAG, "Loaded ${library.size} survival chunks with pre-computed vectors.")
         } catch (e: Exception) {
             library = emptyList()
-            Log.e(TAG, "Failed to load knowledge_base.json. RAG will be disabled.", e)
+            kbEmbeddings = emptyList()
+            Log.e(TAG, "Failed to load knowledge_base.json", e)
         }
 
-        // 2) Init MediaPipe TextEmbedder and build KB embeddings
+        // 2) Init MediaPipe TextEmbedder for user query embedding
         try {
             val baseOptions = BaseOptions.builder()
-                .setModelAssetPath("embedding_model.tflite") // your text embedding model
+                .setModelAssetPath("embedding_model.tflite")
                 .build()
 
             val options = TextEmbedderOptions.builder()
                 .setBaseOptions(baseOptions)
-                .setL2Normalize(true)   // so cosine = dot product
+                .setL2Normalize(true)
                 .setQuantize(false)
                 .build()
 
             textEmbedder = TextEmbedder.createFromOptions(app, options)
             Log.d(TAG, "TextEmbedder initialized")
-
-            if (library.isNotEmpty()) {
-                kbEmbeddings = library.map { chunk ->
-                    val fullTextForChunk = chunk.asContextText().ifBlank { chunk.text.orEmpty() }
-                    val textForChunk = fullTextForChunk.take(EMBED_TEXT_MAX_CHARS)  // 🔹 limit embed size
-                    if (textForChunk.isBlank()) {
-                        FloatArray(0)
-                    } else {
-                        embedText(textForChunk)
-                    }
-                }
-                Log.d(TAG, "KB embeddings built for ${kbEmbeddings.size} chunks")
-            }
-
         } catch (e: Exception) {
             textEmbedder = null
-            kbEmbeddings = emptyList()
-            Log.e(TAG, "Failed to init TextEmbedder. Will fallback to keyword search.", e)
+            Log.e(TAG, "TextEmbedder init failed, will use hybrid keyword matching", e)
         }
-
-        // 3) Load Gemma LLM from assets → internal storage
-        try {
-            val modelPath = copyAssetToFile(GEMMA_ASSET_NAME, GEMMA_ASSET_NAME)
-            Log.d(TAG, "Loading Gemma model from: $modelPath")
-
-            val options = LlmInference.LlmInferenceOptions.builder()
-                .setModelPath(modelPath)
-                .setMaxTokens(800) // increase from 256 to reduce truncation
-                .setMaxTopK(40)
-                .setPreferredBackend(LlmInference.Backend.CPU)
-                .build()
-
-            val engine = LlmInference.createFromOptions(app, options)
-            brain = engine
-
-            // 🔹 create first session with temperature / top-k
-            val session = createSession()
-            Log.d(TAG, "Gemma + session loaded ok: ${session != null}")
-        } catch (e: Exception) {
-            brain = null
-            brainSession = null
-            Log.e(TAG, "Failed to load Gemma LLM", e)
-        }
-
     }
 
+    /**
+     * Lazily loads Gemma 3 1B only when needed, preferring GPU backend for 3x-5x better speed & battery,
+     * with automatic fallback to CPU.
+     */
+    @Synchronized
+    private fun ensureLlmLoaded(): LlmInference? {
+        resetIdleTimer()
+        if (brain != null) return brain
 
-    // ----------------- CHAT -----------------
-
-    fun sendMessage(userText: String) {
-        if (_isAITyping.value) return
-
-        // 1) Add user message to the UI
-        _messages.value += ChatMessage(messages.value.size, userText, Author.USER)
-
-        // 2) Make sure the model itself is loaded
-        val llm = brain
-        if (llm == null) {
-            _messages.value += ChatMessage(
-                id = messages.value.size,
-                text = "AI model is not loaded. Make sure $GEMMA_ASSET_NAME is in the assets folder.",
-                author = Author.AI
-            )
-            return
+        val assetList = try {
+            app.assets.list("")?.toSet() ?: emptySet()
+        } catch (e: Exception) {
+            emptySet()
         }
 
+        val matchedAsset = GEMMA_ASSET_CANDIDATES.firstOrNull { it in assetList }
+        if (matchedAsset == null) {
+            Log.w(TAG, "Gemma .task file not found in assets. Using Direct RAG Survival Responder.")
+            return null
+        }
+
+        val modelPath = copyAssetToFile(matchedAsset, matchedAsset)
+
+        // Try GPU first for performance & battery savings, fallback to CPU if unsupported on emulator
+        for (backend in listOf(LlmInference.Backend.GPU, LlmInference.Backend.CPU)) {
+            try {
+                Log.d(TAG, "Attempting to load Gemma with backend: $backend")
+                val options = LlmInference.LlmInferenceOptions.builder()
+                    .setModelPath(modelPath)
+                    .setMaxTokens(512)
+                    .setMaxTopK(40)
+                    .setPreferredBackend(backend)
+                    .build()
+
+                brain = LlmInference.createFromOptions(app, options)
+                Log.d(TAG, "Gemma loaded successfully on $backend")
+                return brain
+            } catch (e: Exception) {
+                Log.w(TAG, "Backend $backend failed, trying fallback...", e)
+            }
+        }
+        return null
+    }
+
+    private fun resetIdleTimer() {
+        idleUnloadJob?.cancel()
+        idleUnloadJob = viewModelScope.launch(Dispatchers.IO) {
+            delay(IDLE_UNLOAD_MS.milliseconds)
+            unloadLlmToSaveBattery()
+        }
+    }
+
+    @Synchronized
+    private fun unloadLlmToSaveBattery() {
+        if (_isAITyping.value) return
+        try {
+            brainSession?.close()
+            brain?.close()
+            Log.d(TAG, "Unloaded Gemma LLM after inactivity to conserve battery & RAM.")
+        } catch (e: Exception) {
+            Log.w(TAG, "Error unloading LLM", e)
+        } finally {
+            brainSession = null
+            brain = null
+        }
+    }
+
+    // ----------------- CHAT & STREAMING -----------------
+
+    fun sendMessage(userText: String) {
+        if (_isAITyping.value || userText.isBlank()) return
+
+        // 1) Append user message
+        val userMsgId = _messages.value.size
+        _messages.update { it + ChatMessage(id = userMsgId, text = userText, author = Author.USER) }
         _isAITyping.value = true
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                // 1) Retrieve relevant knowledge
-                val topChunks: List<KnowledgeChunk> =
-                    if (textEmbedder != null && kbEmbeddings.isNotEmpty()) {
-                        try {
-                            findTopMatchesWithEmbedder(userText, TOP_K)
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Embedding failed, falling back to keyword search", e)
-                            findTopMatchesByKeyword(userText, library, TOP_K)
-                        }
-                    } else {
-                        findTopMatchesByKeyword(userText, library, TOP_K)
-                    }
+                // 2) Retrieve top survival knowledge chunks
+                val topChunks = retrieveTopChunks(userText, TOP_K)
+                val sourceNames = topChunks.mapNotNull { it.topic ?: it.knot_name }.distinct()
 
-                // DEBUG: see what RAG picked
-                Log.d(TAG, "Top chunks for query: \"$userText\"")
-                topChunks.forEachIndexed { i, chunk ->
-                    Log.d(TAG, "  [$i] ${chunk.topic ?: chunk.knot_name ?: "no title"}")
+                // 3) Check if Gemma LLM is available; if not, stream directly from verified RAG knowledge base
+                val llm = ensureLlmLoaded()
+                if (llm == null) {
+                    streamOfflineRagFallback(topChunks, sourceNames)
+                    return@launch
                 }
 
                 val context = if (topChunks.isEmpty()) {
                     "No specific survival notes were found for this question in the knowledge base."
                 } else {
                     topChunks.joinToString("\n\n") { chunk ->
-                        val snippet = chunk.asContextText().take(CONTEXT_CHARS_PER_CHUNK)
-                        "- $snippet"
+                        "- ${chunk.asContextText().take(CONTEXT_CHARS_PER_CHUNK)}"
                     }
                 }
 
-                // 2) Build compact RAG prompt
                 var prompt = """
-                You are WildGuard AI, an offline wilderness survival assistant running entirely offline on the user’s phone. 
-                
-                You will receive: 
-                - A curated wilderness survival knowledge base with embedding and information("knowledge_base") 
-                - A user question ("Question") 
-                
-                Rules: 
-                1. Use ONLY information from the Knowledge base to generate the best answer for the question. If the information from the knowledge base seems out of context, ignore it.
-                2. If the Knowledge base does not clearly contain the information needed for a safe and specific answer: 
-                    "I’m not sure based on the current knowledge base."
-                    Do not add anything else before or after this sentence.
-                3. Do not invent or guess new survival techniques, numbers, medical advice, or facts that are not supported by the Knowledge base. 
-                4. If parts of the Knowledge base are unrelated to the Question, ignore them completely. 
-                5. Prefer information that directly matches the Question’s topic (e.g. “fire”, “shelter”, “hypothermia”) over more generic or less relevant notes. 
-                6. If the question is related to knots, mention the name of the knot first. 
-                7. Prevent from repeating the same answers many time.
-                
-                Knowledge base: $context 
-                
-                Question: $userText 
-                
-                Answer format: 
-                - Be precise and direct.
-                - Start with ONE short sentence summarising the key idea (max 20 words).
-                - Then give 3–6 numbered steps. 
-                - Do NOT repeat the same idea in multiple steps.
-                - After writing the information from the Knowledge base, include a final line for important cautions if needed: 
-                    "Caution:" + add a suitable caution text for the user depending on the context of the answer. 
-                - If the Question is outside wilderness survival, about general chit-chat, or cannot be answered safely from the Knowledge base, reply exactly: "I’m not sure based on the current knowledge base."
-                
-                Now write the answer following all the rules above.
-                Answer: 
+                You are WildGuard AI, an offline wilderness survival assistant.
+                Use ONLY the Knowledge base below to answer the user's question clearly and safely.
+
+                Knowledge base:
+                $context
+
+                Question: $userText
+
+                Answer format:
+                - Start with ONE short summary sentence.
+                - Give 3–5 clear numbered steps.
+                - End with "Caution: " followed by a brief safety warning.
+                Answer:
                 """.trimIndent()
 
                 if (prompt.length > MAX_PROMPT_CHARS) {
-                    prompt = prompt.take(MAX_PROMPT_CHARS) +
-                            "\n\n[Context truncated for size; answer based on the visible part only.]"
+                    prompt = prompt.take(MAX_PROMPT_CHARS)
                 }
 
-                // 3) Generate with a fresh session for this question
-                Log.d(TAG, "Calling session.generateResponse()")
-
-                val session = createSession()
+                val session = createSession(llm)
                 if (session == null) {
-                    Log.e(TAG, "Session is null even after createSession()")
-                    _messages.value += ChatMessage(
-                        id = messages.value.size,
-                        text = "AI model session is not ready. Please restart the app.",
-                        author = Author.AI
-                    )
+                    streamOfflineRagFallback(topChunks, sourceNames)
                     return@launch
                 }
 
+                // Create placeholder AI message for live token streaming
+                val aiMsgId = _messages.value.size
+                _messages.update {
+                    it + ChatMessage(
+                        id = aiMsgId,
+                        text = "",
+                        author = Author.AI,
+                        isStreaming = true,
+                        sources = sourceNames
+                    )
+                }
+
+                val responseBuilder = StringBuilder()
                 session.addQueryChunk(prompt)
-                val result = session.generateResponse()
-                val cleaned = result.trim()
+                session.generateResponseAsync { partialResult, done ->
+                    responseBuilder.append(partialResult)
+                    val currentText = responseBuilder.toString().trimStart()
 
-                val finalText =
-                    if (cleaned.isBlank() || cleaned == "..." || cleaned.length < 10) {
-                        "I couldn't generate a clear answer from the current knowledge base. " +
-                                "Try asking in a simpler way, like: \"What are the steps to treat hypothermia?\""
-                    } else {
-                        cleaned
+                    _messages.update { list ->
+                        list.map { msg ->
+                            if (msg.id == aiMsgId) {
+                                msg.copy(
+                                    text = currentText.ifBlank { "..." },
+                                    isStreaming = !done
+                                )
+                            } else msg
+                        }
                     }
-                Log.d(TAG, "LLM returned: ${finalText.take(120)}...")
-                Log.d(TAG, "LLM result length: ${result.length}")
 
-
-                _messages.value += ChatMessage(
-                    id = messages.value.size,
-                    text = finalText,
-                    author = Author.AI
-                )
+                    if (done) {
+                        val finalClean = responseBuilder.toString().trim()
+                        if (finalClean.length < 10) {
+                            viewModelScope.launch(Dispatchers.IO) {
+                                _messages.update { list -> list.filterNot { it.id == aiMsgId } }
+                                streamOfflineRagFallback(topChunks, sourceNames)
+                            }
+                        } else {
+                            _isAITyping.value = false
+                            resetIdleTimer()
+                        }
+                    }
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Error during sendMessage()", e)
-                _messages.value += ChatMessage(
-                    id = messages.value.size,
-                    text = "Error: ${e.message}",
-                    author = Author.AI
-                )
-            } finally {
+                _messages.update {
+                    it + ChatMessage(
+                        id = it.size,
+                        text = "Unable to process request: ${e.localizedMessage}",
+                        author = Author.AI
+                    )
+                }
                 _isAITyping.value = false
             }
         }
     }
 
+    /**
+     * Instant RAG responder when the 600MB .task model file is not yet bundled in assets
+     * or if LLM output is empty. Formats verified survival guidelines from knowledge_base.json.
+     */
+    private suspend fun streamOfflineRagFallback(
+        chunks: List<KnowledgeChunk>,
+        sources: List<String>
+    ) {
+        val formattedAnswer = if (chunks.isEmpty()) {
+            "I couldn't find a matching survival protocol for that topic in the offline knowledge base. Try asking about fire making, knots (like Bowline or Reef knot), hypothermia, bleeding, or shelter.\n\nCaution: Always prioritize shelter, water, and signaling for rescue in an emergency."
+        } else {
+            val primary = chunks.first()
+            val title = primary.topic ?: primary.knot_name ?: "Survival Protocol"
+            val body = primary.asContextText().trim()
+            buildString {
+                append("$title\n\n")
+                append(body)
+                if (chunks.size > 1) {
+                    val secondary = chunks[1]
+                    val secTitle = secondary.topic ?: secondary.knot_name
+                    if (!secTitle.isNullOrBlank()) {
+                        append("\n\nRelated ($secTitle):\n")
+                        append(secondary.asContextText().take(240).trim())
+                    }
+                }
+                append("\n\nCaution: Follow each survival step carefully and assess your surroundings for immediate hazards before acting.")
+            }
+        }
 
-    // ----------------- RAG HELPERS -----------------
+        val aiMsgId = _messages.value.size
+        _messages.update {
+            it + ChatMessage(
+                id = aiMsgId,
+                text = "",
+                author = Author.AI,
+                isStreaming = true,
+                sources = sources
+            )
+        }
 
-    /** Run the MediaPipe TextEmbedder on a single piece of text. */
+        // Smooth token-like streaming experience
+        val words = formattedAnswer.split(" ")
+        val sb = StringBuilder()
+        for ((index, word) in words.withIndex()) {
+            if (index > 0) sb.append(" ")
+            sb.append(word)
+            if (index % 3 == 0 || index == words.lastIndex) {
+                val partial = sb.toString()
+                _messages.update { list ->
+                    list.map { msg ->
+                        if (msg.id == aiMsgId) {
+                            msg.copy(
+                                text = partial,
+                                isStreaming = index != words.lastIndex
+                            )
+                        } else msg
+                    }
+                }
+                delay(18)
+            }
+        }
+        _isAITyping.value = false
+    }
+
+    // ----------------- RAG RETRIEVAL -----------------
+
+    private fun retrieveTopChunks(query: String, k: Int): List<KnowledgeChunk> {
+        if (library.isEmpty()) return emptyList()
+
+        return try {
+            if (textEmbedder != null && kbEmbeddings.isNotEmpty()) {
+                findTopMatchesWithEmbedder(query, k)
+            } else {
+                findTopMatchesByKeyword(query, library, k)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Falling back to keyword search", e)
+            findTopMatchesByKeyword(query, library, k)
+        }
+    }
+
     private fun embedText(text: String): FloatArray {
-        val embedder = textEmbedder ?: error("TextEmbedder not initialized")
-
+        val embedder = textEmbedder ?: return FloatArray(0)
         val result = embedder.embed(text)
-        val embeddingResult = result.embeddingResult()
-        val embeddings = embeddingResult.embeddings()
-
+        val embeddings = result.embeddingResult().embeddings()
         if (embeddings.isEmpty()) return FloatArray(0)
-
-        // Single-head model → just take the first embedding
         return embeddings[0].floatEmbedding()
     }
 
-    /** Cosine-similarity retrieval using MediaPipe TextEmbedder embeddings
-     *  + strong preference for topic/title matches.
-     */
-    private fun findTopMatchesWithEmbedder(
-        query: String,
-        k: Int
-    ): List<KnowledgeChunk> {
-        if (library.isEmpty() || kbEmbeddings.isEmpty()) return emptyList()
-
+    private fun findTopMatchesWithEmbedder(query: String, k: Int): List<KnowledgeChunk> {
         val qVec = embedText(query)
-        if (qVec.isEmpty()) return emptyList()
-
-        // 1) Extract meaningful words from the query (ignore stopwords)
         val stopwords = setOf(
             "how", "what", "when", "where", "why", "who",
             "to", "a", "an", "the", "is", "are", "do", "i",
-            "you", "in", "of", "for", "on", "and", "or",
-            "start", "make" // ← you can REMOVE these if you want them to count
+            "you", "in", "of", "for", "on", "and", "or", "can", "with"
         )
 
-        val queryWords = query
-            .lowercase()
+        val queryWords = query.lowercase()
             .split(" ", "\n", "\t", ",", ".", "?", "!", ":", ";")
             .map { it.trim() }
-            .filter { it.isNotBlank() }
+            .filter { it.isNotBlank() && it.length > 2 }
 
-        val contentWords = queryWords.filter { it !in stopwords }.toSet()
-        if (contentWords.isEmpty()) {
-            // Fallback: just use all words if everything got filtered out
-            contentWords.toMutableSet().addAll(queryWords)
-        }
+        val contentWords = queryWords.filter { it !in stopwords }.ifEmpty { queryWords }.toSet()
 
         data class Scored(
             val chunk: KnowledgeChunk,
@@ -396,102 +432,66 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             val bodyScore: Int
         )
 
-        val scored = library.mapIndexedNotNull { index, chunk ->
+        val scored = library.mapIndexed { index, chunk ->
             val vec = kbEmbeddings.getOrNull(index)
-            if (vec == null || vec.isEmpty() || vec.size != qVec.size) {
-                null
+            val sim = if (vec != null && vec.isNotEmpty() && qVec.isNotEmpty() && vec.size == qVec.size) {
+                cosine(qVec, vec)
             } else {
-                val sim = cosine(qVec, vec)
-
-                val titleText = buildString {
-                    append(chunk.topic ?: "")
-                    append(' ')
-                    append(chunk.knot_name ?: "")
-                }.lowercase()
-
-                val bodyText = buildString {
-                    append(chunk.region ?: "")
-                    append(' ')
-                    append(chunk.text ?: "")
-                    append(' ')
-                    append(chunk.description ?: "")
-                }.lowercase()
-
-                val titleScore = contentWords.count { word -> titleText.contains(word) }
-                val bodyScore = contentWords.count { word -> bodyText.contains(word) }
-
-                Scored(chunk, sim, titleScore, bodyScore)
+                0.0
             }
+
+            val titleText = "${chunk.topic.orEmpty()} ${chunk.knot_name.orEmpty()}".lowercase()
+            val bodyText = "${chunk.region.orEmpty()} ${chunk.text.orEmpty()} ${chunk.description.orEmpty()} ${chunk.instructions.orEmpty()}".lowercase()
+
+            val titleScore = contentWords.count { titleText.contains(it) }
+            val bodyScore = contentWords.count { bodyText.contains(it) }
+
+            Scored(chunk, sim, titleScore, bodyScore)
         }
 
-        if (scored.isEmpty()) return emptyList()
-
-        // 2) Prefer items where the TITLE matches the important words
         val withTitleMatches = scored.filter { it.titleScore > 0 }
+        val pool = if (withTitleMatches.isNotEmpty()) withTitleMatches else scored
 
-        val baseList = when {
-            withTitleMatches.isNotEmpty() -> withTitleMatches
-            else -> scored // no title matches at all → fall back to everything
-        }
-
-        val sorted = baseList.sortedWith(
-            compareByDescending<Scored> { it.titleScore }  // 1) topic/knot_name overlap
-                .thenByDescending { it.bodyScore }         // 2) body overlap
-                .thenByDescending { it.sim }               // 3) embedding similarity
-        )
-
-        return sorted.take(k).map { it.chunk }
+        return pool.sortedWith(
+            compareByDescending<Scored> { it.titleScore }
+                .thenByDescending { it.bodyScore }
+                .thenByDescending { it.sim }
+        ).take(k).map { it.chunk }
     }
 
-    /** Fallback retrieval: simple keyword matching over text fields. */
     private fun findTopMatchesByKeyword(
         query: String,
         kb: List<KnowledgeChunk>,
         k: Int
     ): List<KnowledgeChunk> {
-        if (kb.isEmpty()) return emptyList()
-
-        val queryWords = query
-            .lowercase()
+        val queryWords = query.lowercase()
             .split(" ", "\n", "\t", ",", ".", "?", "!", ":", ";")
-            .filter { it.isNotBlank() }
+            .filter { it.length > 2 }
 
-        val scored = kb.map { chunk ->
-            val textAll = buildString {
-                append(chunk.topic ?: "")
-                append(' ')
-                append(chunk.region ?: "")
-                append(' ')
-                append(chunk.text ?: "")
-                append(' ')
-                append(chunk.knot_name ?: "")
-                append(' ')
-                append(chunk.description ?: "")
-            }.lowercase()
-
-            val score = queryWords.count { word -> textAll.contains(word) }
+        return kb.map { chunk ->
+            val textAll = "${chunk.topic.orEmpty()} ${chunk.knot_name.orEmpty()} ${chunk.text.orEmpty()} ${chunk.description.orEmpty()} ${chunk.instructions.orEmpty()}".lowercase()
+            val titleText = "${chunk.topic.orEmpty()} ${chunk.knot_name.orEmpty()}".lowercase()
+            val score = queryWords.sumOf { word ->
+                (if (titleText.contains(word)) 3 else 0) + (if (textAll.contains(word)) 1 else 0)
+            }
             chunk to score
         }
-
-        return scored
             .sortedByDescending { it.second }
             .take(k)
             .map { it.first }
     }
 
-    /** Turn a KnowledgeChunk into a human-readable context passage. */
     private fun KnowledgeChunk.asContextText(): String {
-        val baseText = when {
-            text != null -> text
-            description != null -> {
+        return when {
+            !text.isNullOrBlank() -> text
+            !description.isNullOrBlank() -> {
                 val title = topic ?: knot_name ?: "Knot"
-                val uses = use_cases?.joinToString(", ") ?: ""
-                val instr = instructions ?: ""
+                val uses = use_cases?.joinToString(", ").orEmpty()
+                val instr = instructions.orEmpty()
                 "$title.\nDescription: $description\nUses: $uses\nInstructions: $instr"
             }
             else -> ""
         }
-        return baseText
     }
 
     private fun cosine(a: FloatArray, b: FloatArray): Double {
@@ -510,7 +510,6 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         return dot / (sqrt(magA) * sqrt(magB))
     }
 
-    /** Copy big files (like .task) to internal storage and return full path. */
     private fun copyAssetToFile(assetName: String, outFileName: String): String {
         val file = File(app.filesDir, outFileName)
         if (!file.exists()) {
@@ -523,46 +522,49 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         return file.absolutePath
     }
 
-    // ----------------- LLM SESSION HELPERS -----------------
-
-    /**
-     * Create a fresh LlmInferenceSession with our sampling settings.
-     * Also closes any old session. Returns the new session or null on failure.
-     */
-    private fun createSession(): LlmInferenceSession? {
-        val engine = brain ?: return null
-
+    private fun createSession(engine: LlmInference): LlmInferenceSession? {
         try {
             brainSession?.close()
         } catch (e: Exception) {
             Log.w(TAG, "Error closing old session", e)
         }
 
-        val sessionOptions =
-            LlmInferenceSession.LlmInferenceSessionOptions.builder()
-                .setTopK(20)          // how many tokens to consider
-                .setTopP(0.8f)       // nucleus sampling
-                .setTemperature(0.2f) // lower = more deterministic, fewer hallucinations
+        return try {
+            val sessionOptions = LlmInferenceSession.LlmInferenceSessionOptions.builder()
+                .setTopK(20)
+                .setTopP(0.8f)
+                .setTemperature(0.2f)
                 .build()
-
-        val session = LlmInferenceSession.createFromOptions(engine, sessionOptions)
-        brainSession = session
-        return session
+            LlmInferenceSession.createFromOptions(engine, sessionOptions).also {
+                brainSession = it
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to create LlmInferenceSession", e)
+            null
+        }
     }
 
     /**
-     * Optional: call this if you add a "New chat" button in the UI.
-     * It recreates the session and resets the chat messages.
+     * Resets the conversation back to the initial Figma "Home Page" centered prompt state.
      */
     fun resetChatSession() {
-        createSession()
-        _messages.value = listOf(
-            ChatMessage(
-                id = 0,
-                text = "Hi! I'm WildGuard AI (Gemma on-device). How can I help you?",
-                author = Author.AI
-            )
-        )
+        brainSession?.let {
+            try {
+                it.close()
+            } catch (_: Exception) {
+            }
+        }
+        brainSession = null
+        _isAITyping.value = false
+        _messages.value = emptyList()
     }
 
+    override fun onCleared() {
+        super.onCleared()
+        unloadLlmToSaveBattery()
+        try {
+            textEmbedder?.close()
+        } catch (_: Exception) {
+        }
+    }
 }

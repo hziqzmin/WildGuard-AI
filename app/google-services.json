@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "641470295900",
+    "project_id": "wildguard-ai-hziqzmin",
+    "storage_bucket": "wildguard-ai-hziqzmin.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:641470295900:android:72f38aef38fd5807ca9b99",
+        "android_client_info": {
+          "package_name": "io.github.hziqzmin.wildguardai"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBw2mHLyYdiftQlx5INdgn0jc6oCplUzBw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
