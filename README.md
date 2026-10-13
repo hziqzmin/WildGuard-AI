@@ -6,7 +6,7 @@
 
 ## Problem Statement: The Disconnection Dilemma
 Outdoor enthusiasts, hikers, and field researchers frequently venture into off-grid regions with zero cellular reception. In emergency scenarios (injuries, extreme weather, getting lost, gear failure), traditional search engines and cloud-based AI assistants (ChatGPT, Gemini) become completely inaccessible. 
-**WildGuard AI solves this by bringing modern generative AI and curated survival doctrine directly to the edge — functioning 100% offline in Airplane mode with zero cloud dependency.**
+**WildGuard AI solves this by bringing modern generative AI and curated survival information directly to the edge, functioning 100% offline in Airplane mode with zero cloud dependency.**
 
 ---
 
