@@ -1,10 +1,85 @@
-# WildGuard AI
+# WildGuard AI - On-Device Wilderness Survival Assistant
 
-**WildGuard AI** is an experimental Android application that runs lightweight Large Language Models (LLMs) locally on-device using MediaPipe and Jetpack Compose.
+**A native Android application running local, quantized Small Language Models (SLMs) and on-device Retrieval-Augmented Generation (RAG) to provide real-time, life-saving survival guidance in zero-connectivity environments.**
 
 ---
 
-## 📥 Model Download:  
+## Problem Statement: The Disconnection Dilemma
+Outdoor enthusiasts, hikers, and field researchers frequently venture into off-grid regions with zero cellular reception. In emergency scenarios (injuries, extreme weather, getting lost, gear failure), traditional search engines and cloud-based AI assistants (ChatGPT, Gemini) become completely inaccessible. 
+**WildGuard AI solves this by bringing modern generative AI and curated survival doctrine directly to the edge — functioning 100% offline in Airplane mode with zero cloud dependency.**
+
+---
+
+## Technical Architecture & On-Device RAG Pipeline
+WildGuard AI utilizes an offline-first **Retrieval-Augmented Generation (RAG)** pipeline designed specifically around mobile hardware constraints (minimizing RAM usage and battery drain while eliminating hallucinations).
+
+```text
+┌────────────────────────────────────────────────────────────────────────┐
+│                        ON-DEVICE RAG PIPELINE                          │
+└────────────────────────────────────────────────────────────────────────┘
+
+               [ 👤 User Query: "How to treat hypothermia?" ]
+                                     │
+                                     ▼
+      ┌─────────────────────────────────────────────────────────────┐
+      │ 1. Vector Embedding (MediaPipe / TFLite ~5MB)               │
+      │ • Converts short user query into high-dimensional vector    │
+      └──────────────────────────────┬──────────────────────────────┘
+                                     │
+                                     ▼
+      ┌─────────────────────────────────────────────────────────────┐
+      │ 2. Hybrid Retrieval Scorer (< 10ms execution)               │
+      │ • Title & Keyword matching (Direct topic alignment)         │
+      │ • Cosine vector similarity against pre-computed vectors     │
+      │   stored in knowledge_base.json                             │
+      └──────────────────────────────┬──────────────────────────────┘
+                                     │
+                                     ▼
+      ┌─────────────────────────────────────────────────────────────┐
+      │ 3. Grounded Context Synthesis & Guardrail Prompting         │
+      │ • Injects Top-K verified survival passages into strict      │
+      │   anti-hallucination prompt templates                       │
+      └──────────────────────────────┬──────────────────────────────┘
+                                     │
+                                     ▼
+      ┌─────────────────────────────────────────────────────────────┐
+      │ 4. Local SLM Inference (Gemma 3 1B INT4 / MediaPipe GenAI) │
+      │ • GPU-accelerated inference with automatic CPU fallback     │
+      │ • Real-time token streaming via asynchronous callbacks      │
+      └──────────────────────────────┬──────────────────────────────┘
+                                     │
+                                     ▼
+     [ 📱 Structured Actionable Response: Summary + Steps + Caution Alert ]
+```
+
+---
+## Tech Stack & Technologies
+* **Language:** Kotlin (100% Native Android)
+* **UI Framework:** Jetpack Compose & Material 3 (Declarative UI)
+* **Architecture:** MVVM / MVI with Kotlin Coroutines & StateFlow
+* **On-Device AI Engine:** Google MediaPipe Tasks GenAI (`tasks-genai`)
+* **Local Models:** Quantized Gemma 3 1B IT (4-bit integer / INT4 `.task` bundle)
+* **Embeddings & Search:** TensorFlow Lite (`embedding_model.tflite`) + Cosine Similarity
+* **Backend & Cloud Sync:** Firebase Authentication & Jetpack DataStore (Online sync + offline persistence)
+* **Local Storage:** Android Internal Storage & Asset Management
+---
+## Active Development: What’s Coming in Version 2 (v2)
+I am currently developing **Version 2** on the [`v2` branch](https://github.com/hziqzmin/WildGuard-AI/tree/v2), taking WildGuard AI from an experimental prototype to a production-grade application:
+1. **Complete UI/UX Overhaul:**
+   * Rebuilding the interface from scratch in Jetpack Compose using a custom **Tactical Wilderness** palette (`#2D3A3A`, `#F5F0E0`, `#FAFAFA`, `#26A69A`) and Montserrat typography.
+   * Dynamic 2-state interface: Vertically centered prompt card on launch transitioning smoothly into a docked, conversational messaging interface.
+   * Minimalist 5-icon bottom navigation bar (*Guides, Compass, AI Home, SOS, Profile*).
+2. **AI & Battery Performance Optimizations:**
+   * **Real-Time Token Streaming:** Upgrading from blocking synchronous generation to asynchronous token streaming (`generateResponseAsync`), rendering words live in < 0.5s.
+   * **GPU Acceleration:** Offloading matrix multiplication to mobile GPUs to accelerate generation by 3x–5x and prevent sustained CPU thermal throttling.
+   * **Lazy Loading & Auto-Unload:** Dynamically loading the 600MB model into RAM only during active chat and auto-releasing memory after 5 minutes of inactivity to save battery.
+3. **Cloud & Hybrid Capabilities:**
+   * Integrating **Firebase Authentication** for user accounts, profile syncing, and cloud-backed Emergency Medical IDs, fully paired with offline session caching for seamless off-grid usage.
+   * Support for Over-The-Air (OTA) survival knowledge base updates.
+
+---
+
+## Model Download:  
 This app requires the quantized MediaPipe task bundle to run locally:
 
 * **Model:** [AfiOne/gemma3-1b-it-int4.task](https://huggingface.co/AfiOne/gemma3-1b-it-int4.task)
@@ -13,7 +88,7 @@ This app requires the quantized MediaPipe task bundle to run locally:
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
 ### Prerequisites
 * Android device running **Android 8.0 (API level 26)** or higher
