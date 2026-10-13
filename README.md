@@ -1,4 +1,4 @@
-# WildGuard AI - On-Device Wilderness Survival Assistant
+# WildGuard AI : On-Device Wilderness Survival Assistant
 
 **A native Android application running local, quantized Small Language Models (SLMs) and on-device Retrieval-Augmented Generation (RAG) to provide real-time, life-saving survival guidance in zero-connectivity environments.**
 
@@ -51,7 +51,17 @@ WildGuard AI utilizes an offline-first **Retrieval-Augmented Generation (RAG)** 
                                      ▼
      [ 📱 Structured Actionable Response: Summary + Steps + Caution Alert ]
 ```
+---
 
+
+### 💡 Key Engineering Decisions in this Pipeline:
+1. **Procedural (Semantic) Chunking Over Fixed-Size Chunking:**
+   Survival information cannot be split arbitrarily across token counts (e.g., cutting a snakebite first aid steps in half is dangerous). Each chunk is intentionally structured around a complete problem-solution pair: topic name, concise explanation, numbered steps, and cautions.
+2. **Pre-Computed Vectors for 0ms Mobile Latency:**
+   By embedding the documents on the developer's workstation prior to compilation, the mobile device never has to compute embeddings for the knowledge base. Upon app launch, the Kotlin app simply loads the JSON and reads the raw float arrays into memory in under **10 milliseconds**, consuming less battery.
+3. **OTA (Over-The-Air) Updatable Architecture:**
+   Because `knowledge_base.json` is a decoupled data layer, the developer can ingest new wilderness manuals, re-run the Python script, and distribute updated knowledge files over-the-air via Firebase Storage/Remote Config without requiring users to download a new APK update from Google Play.
+   
 ---
 ## Tech Stack & Technologies
 * **Language:** Kotlin (100% Native Android)
